@@ -1,0 +1,242 @@
+Parameters:
+  nodegroupName:
+    Type: String
+    Default: ec2Nodes
+
+  amiType:
+    Type: String
+    Default: AL2_x86_64
+    AllowedValues:
+      - AL2_ARM_64
+      - AL2_x86_64
+      - AL2_x86_64_GPU
+      - BOTTLEROCKET_ARM_64
+      - BOTTLEROCKET_ARM_64_NVIDIA
+      - BOTTLEROCKET_x86_64
+      - BOTTLEROCKET_x86_64_NVIDIA
+
+  capacityType:
+    Type: String
+    Default: ON_DEMAND
+    AllowedValues:
+      - ON_DEMAND
+      - SPOT
+
+  diskSize:
+    Type: Number
+    Default: 20
+    Description: EBS Volume in GB
+
+  instanceTypes:
+    Type: CommaDelimitedList
+    Default: "t3.small"
+
+  minimumNodes:
+    Type: Number
+    Default: 2
+
+  desiredNodes:
+    Type: Number
+    Default: 2
+
+  maximumNode:
+    Type: Number
+    Default: 4
+
+
+  clusterName:
+    Type: String
+    Default: ec2-eks-demo
+
+  kubernetesVersion:
+    Type: String
+    Default: 1.23
+
+  vpcBlock:
+    Type: String
+    Default: 192.168.0.0/24
+    Description: The CIDR range for the VPC. This should be a valid private (RFC 1918) CIDR range.
+
+  publicSubnet01Block:
+    Type: String
+    Default: 192.168.0.0/26
+    Description: CidrBlock for public subnet 01 within the VPC
+
+  publicSubnet02Block:
+    Type: String
+    Default: 192.168.0.64/26
+    Description: CidrBlock for public subnet 02 within the VPC
+
+  privateSubnet01Block:
+    Type: String
+    Default: 192.168.0.128/26
+    Description: CidrBlock for private subnet 01 within the VPC
+
+  privateSubnet02Block:
+    Type: String
+    Default: 192.168.0.192/26
+    Description: CidrBlock for private subnet 02 within the VPC
+
+  templateUrlVpc:
+    Type: String
+    Default: https://cloudformation-templates-prateek.s3.amazonaws.com/amazon-eks-vpc.yaml
+
+  templateUrlCluster:
+    Type: String
+    Default: https://cloudformation-templates-prateek.s3.amazonaws.com/eks-cluster.yaml
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: "Worker Network Configuration"
+        Parameters:
+          - vpcBlock
+          - publicSubnet01Block
+          - publicSubnet02Block
+          - privateSubnet01Block
+          - privateSubnet02Block
+      - 
+        Label:
+          default: "Cluster Details"
+        Parameters:
+          - clusterName
+          - kubernetesVersion
+      - 
+        Label:
+          default: "Node Group Details"
+        Parameters:
+          - nodegroupName
+      - 
+        Label:
+          default: "Worker Node Details"
+        Parameters:
+          - amiType
+          - capacityType
+          - diskSize
+          - instanceTypes
+      - 
+        Label:
+          default: "Auto scaling configuration"
+        Parameters:
+          - minimumNodes
+          - desiredNodes
+          - maximumNode
+
+
+Resources:
+
+  EksCluster:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Ref templateUrlCluster
+      Parameters:
+        clusterName: !Ref clusterName
+        kubernetesVersion: !Ref kubernetesVersion
+        vpcBlock: !Ref vpcBlock
+        publicSubnet01Block: !Ref publicSubnet01Block
+        publicSubnet02Block: !Ref publicSubnet02Block
+        privateSubnet01Block: !Ref privateSubnet01Block
+        privateSubnet02Block: !Ref privateSubnet02Block
+        templateUrlVpc: !Ref templateUrlVpc
+      TimeoutInMinutes: 30
+
+  NodeGroupRole:
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument: |
+        {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {
+                        "Service": "ec2.amazonaws.com"
+                    },
+                    "Action": "sts:AssumeRole"
+                }
+            ]
+        }
+      Description: Allows EC2 instances to call AWS services on your behalf.
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+      Policies: 
+        - PolicyDocument: !Sub |
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "autoscaling:DescribeAutoScalingGroups",
+                            "autoscaling:DescribeAutoScalingInstances",
+                            "autoscaling:DescribeLaunchConfigurations",
+                            "autoscaling:DescribeTags",
+                            "autoscaling:SetDesiredCapacity",
+                            "autoscaling:TerminateInstanceInAutoScalingGroup",
+                            "ec2:DescribeLaunchTemplateVersions"
+                        ],
+                        "Resource": "*"
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "ec2:CreateTags"
+                        ],
+                        "Resource": [
+                            "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*"
+                        ]
+                    }
+                ]
+            }
+          PolicyName: eksCniWorkerNodePolicyCFT
+      RoleName: ec2EksNodeGroupCFT
+     
+
+  NodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties: 
+      AmiType: !Ref amiType
+      CapacityType: !Ref capacityType
+      ClusterName: !GetAtt EksCluster.Outputs.ClusterName
+      DiskSize: !Ref diskSize
+      ForceUpdateEnabled: false
+      InstanceTypes: !Ref instanceTypes
+      NodegroupName: !Ref nodegroupName
+      NodeRole: !GetAtt NodeGroupRole.Arn
+      ScalingConfig:
+        MinSize: !Ref minimumNodes
+        DesiredSize: !Ref desiredNodes
+        MaxSize: !Ref maximumNode
+      Subnets: !Split [",", !GetAtt EksCluster.Outputs.SubnetIds]
+      Tags: {"k8s.io/cluster-autoscaler/ec2-eks-demo": "owned", "k8s.io/cluster-autoscaler/enabled": "true"}
+
+
+
+
+Outputs:
+
+  ClusterName:
+    Value: !GetAtt EksCluster.Outputs.ClusterName
+
+  ClusterArn:
+    Value: !GetAtt EksCluster.Outputs.ClusterArn
+
+  EfsId:
+    Value: !GetAtt EksCluster.Outputs.EfsId
+
+  VpcId:
+    Value: !GetAtt EksCluster.Outputs.VpcId
+
+  OpenIdConnectIssuerUrl: 
+    Value: !GetAtt EksCluster.Outputs.OpenIdConnectIssuerUrl
+
+  CertificateAuthorityData: 
+    Value: !GetAtt EksCluster.Outputs.CertificateAuthorityData
+
+  ClusterIdProviderNumber:
+    Value: !GetAtt EksCluster.Outputs.ClusterIdProviderNumber

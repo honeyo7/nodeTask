@@ -1,0 +1,141 @@
+Parameters:
+  clusterName:
+    Type: String
+
+  kubernetesVersion:
+    Type: String
+    Default: 1.23
+
+  vpcBlock:
+    Type: String
+    Default: 192.168.0.0/24
+    Description: The CIDR range for the VPC. This should be a valid private (RFC 1918) CIDR range.
+
+  publicSubnet01Block:
+    Type: String
+    Default: 192.168.0.0/26
+    Description: CidrBlock for public subnet 01 within the VPC
+
+  publicSubnet02Block:
+    Type: String
+    Default: 192.168.0.64/26
+    Description: CidrBlock for public subnet 02 within the VPC
+
+  privateSubnet01Block:
+    Type: String
+    Default: 192.168.0.128/26
+    Description: CidrBlock for private subnet 01 within the VPC
+
+  privateSubnet02Block:
+    Type: String
+    Default: 192.168.0.192/26
+    Description: CidrBlock for private subnet 02 within the VPC
+
+  templateUrlVpc:
+    Type: String
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: "Worker Network Configuration"
+        Parameters:
+          - vpcBlock
+          - publicSubnet01Block
+          - publicSubnet02Block
+          - privateSubnet01Block
+          - privateSubnet02Block
+      - 
+        Label:
+          default: "Cluster Details"
+        Parameters:
+          - clusterName
+          - kubernetesVersion
+
+Resources:
+
+  EksVPC:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Ref templateUrlVpc
+      Parameters:
+        vpcBlock: !Ref vpcBlock
+        publicSubnet01Block: !Ref publicSubnet01Block
+        publicSubnet02Block: !Ref publicSubnet02Block
+        privateSubnet01Block: !Ref privateSubnet01Block
+        privateSubnet02Block: !Ref privateSubnet02Block
+        clusterName: !Ref clusterName
+      TimeoutInMinutes: 20
+
+  EksClusterRole:
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument: |
+        {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {
+                        "Service": "eks.amazonaws.com"
+                    },
+                    "Action": "sts:AssumeRole"
+                }
+            ]
+        }
+      Description: This policy provides Kubernetes the permissions it requires to manage resources on your behalf.
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+        - arn:aws:iam::aws:policy/AmazonEKSVPCResourceController
+      RoleName: eksClusterRoleCFT
+
+  EksCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      RoleArn: !GetAtt EksClusterRole.Arn
+      Name: !Ref clusterName
+      ResourcesVpcConfig:
+        EndpointPrivateAccess: true
+        EndpointPublicAccess: true
+        SubnetIds: !Split [",", !GetAtt EksVPC.Outputs.SubnetIds]
+        SecurityGroupIds:
+          - !GetAtt EksVPC.Outputs.SecurityGroupIdControlPlane
+      Version: !Ref kubernetesVersion
+
+Outputs:
+
+  ClusterName:
+    Value: !Ref EksCluster
+
+  ClusterArn:
+    Value: !GetAtt EksCluster.Arn
+
+  SubnetIds: 
+    Value: !GetAtt EksVPC.Outputs.SubnetIds
+
+  PrivateSubnetIds:
+    Value: !GetAtt EksVPC.Outputs.PrivateSubnetIds
+
+  VpcId:
+    Value: EksVPC.Outputs.VpcId
+
+  OpenIdConnectIssuerUrl: 
+    Value: !GetAtt EksCluster.OpenIdConnectIssuerUrl
+
+  ClusterSecurityGroupId: 
+    Value: !GetAtt EksCluster.ClusterSecurityGroupId
+
+  SecurityGroupIdControlPlane:
+    Value: !GetAtt EksVPC.Outputs.SecurityGroupIdControlPlane
+
+  CertificateAuthorityData: 
+    Value: !GetAtt EksCluster.CertificateAuthorityData
+
+  ClusterIdProviderNumber:
+    Value: !Select [4, !Split ["/", !GetAtt EksCluster.OpenIdConnectIssuerUrl]]
+
+  EfsId:
+    Value: !GetAtt EksVPC.Outputs.EfsId
+
+#SubnetIds: !Sub '[${!GetAtt EksVPC.Outputs.SubnetIds}]' 
