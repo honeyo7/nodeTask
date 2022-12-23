@@ -240,3 +240,6 @@ Outputs:
 
   ClusterIdProviderNumber:
     Value: !GetAtt EksCluster.Outputs.ClusterIdProviderNumber
+
+  Region:
+    Value: !Ref AWS::Region
